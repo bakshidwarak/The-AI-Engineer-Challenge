@@ -1,221 +1,512 @@
 import React, { useState } from 'react';
 import './App.css';
 
-// Types for options and attributes
+// Types for the decision-making process
+interface Decision {
+  question: string;
+  options: Option[];
+  criteria: Criterion[];
+  scores: ScoreEntry[];
+  results: Result[];
+}
+
 interface Option {
   id: number;
   name: string;
 }
 
-interface Attribute {
+interface Criterion {
   id: number;
   name: string;
-  weight: number; // 0-100
+  weight: number;
+  order: number;
 }
 
+interface ScoreEntry {
+  optionId: number;
+  criterionId: number;
+  score: number;
+}
+
+interface Result {
+  optionId: number;
+  optionName: string;
+  totalScore: number;
+  weightedScore: number;
+}
+
+type Step = 'decision' | 'options' | 'criteria' | 'ordering' | 'scoring' | 'results';
+
 function App() {
-  // State for options and attributes
-  const [options, setOptions] = useState<Option[]>([]);
-  const [attributes, setAttributes] = useState<Attribute[]>([]);
-  const [newOptionName, setNewOptionName] = useState('');
-  const [newAttributeName, setNewAttributeName] = useState('');
-  const [newAttributeWeight, setNewAttributeWeight] = useState(50);
+  const [currentStep, setCurrentStep] = useState<Step>('decision');
+  const [decision, setDecision] = useState<Decision>({
+    question: '',
+    options: [],
+    criteria: [],
+    scores: [],
+    results: []
+  });
 
-  // Add Option with form input
-  const addOption = () => {
-    if (newOptionName.trim()) {
-      setOptions([...options, { id: Date.now(), name: newOptionName.trim() }]);
-      setNewOptionName('');
+  // Step 1: Decision Question
+  const handleDecisionSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (decision.question.trim()) {
+      setCurrentStep('options');
     }
   };
 
-  // Add Attribute with form input
-  const addAttribute = () => {
-    if (newAttributeName.trim() && newAttributeWeight >= 0 && newAttributeWeight <= 100) {
-      setAttributes([...attributes, { 
-        id: Date.now(), 
-        name: newAttributeName.trim(), 
-        weight: newAttributeWeight 
-      }]);
-      setNewAttributeName('');
-      setNewAttributeWeight(50);
+  // Step 2: Options
+  const [newOption, setNewOption] = useState('');
+  
+  const addOption = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newOption.trim()) {
+      const option = { id: Date.now(), name: newOption.trim() };
+      setDecision(prev => ({
+        ...prev,
+        options: [...prev.options, option]
+      }));
+      setNewOption('');
     }
   };
 
-  // Remove option
   const removeOption = (id: number) => {
-    setOptions(options.filter(option => option.id !== id));
+    setDecision(prev => ({
+      ...prev,
+      options: prev.options.filter(opt => opt.id !== id)
+    }));
   };
 
-  // Remove attribute
-  const removeAttribute = (id: number) => {
-    setAttributes(attributes.filter(attr => attr.id !== id));
+  const continueToCriteria = () => {
+    if (decision.options.length >= 2) {
+      setCurrentStep('criteria');
+    }
   };
 
-  // Handle form submissions
-  const handleOptionSubmit = (e: React.FormEvent) => {
+  // Step 3: Criteria
+  const [newCriterion, setNewCriterion] = useState('');
+  
+  const addCriterion = (e: React.FormEvent) => {
     e.preventDefault();
-    addOption();
+    if (newCriterion.trim()) {
+      const criterion = { 
+        id: Date.now(), 
+        name: newCriterion.trim(), 
+        weight: 0,
+        order: decision.criteria.length
+      };
+      setDecision(prev => ({
+        ...prev,
+        criteria: [...prev.criteria, criterion]
+      }));
+      setNewCriterion('');
+    }
   };
 
-  const handleAttributeSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    addAttribute();
+  const removeCriterion = (id: number) => {
+    setDecision(prev => ({
+      ...prev,
+      criteria: prev.criteria.filter(crit => crit.id !== id)
+    }));
+  };
+
+  const continueToOrdering = () => {
+    if (decision.criteria.length >= 2) {
+      setCurrentStep('ordering');
+    }
+  };
+
+  // Step 4: Criteria Ordering
+  const [orderingStep, setOrderingStep] = useState(0);
+  const [orderedCriteria, setOrderedCriteria] = useState<Criterion[]>([]);
+  const [currentPair, setCurrentPair] = useState<[Criterion, Criterion] | null>(null);
+
+  const startOrdering = () => {
+    const criteria = [...decision.criteria];
+    setOrderedCriteria(criteria);
+    setOrderingStep(1);
+    // Set up first pair
+    if (criteria.length >= 2) {
+      setCurrentPair([criteria[0], criteria[1]]);
+    }
+  };
+
+  const handleOrderingChoice = (chosenCriterion: Criterion) => {
+    const currentIndex = orderingStep - 1;
+    const nextIndex = orderingStep;
+    
+    // Update the order of the chosen criterion
+    const updatedCriteria = orderedCriteria.map(crit => 
+      crit.id === chosenCriterion.id 
+        ? { ...crit, order: currentIndex }
+        : crit
+    );
+    
+    if (orderingStep < decision.criteria.length - 1) {
+      setOrderingStep(orderingStep + 1);
+      setOrderedCriteria(updatedCriteria);
+      // Set up next pair
+      const nextPair: [Criterion, Criterion] = [updatedCriteria[nextIndex], updatedCriteria[nextIndex + 1]];
+      setCurrentPair(nextPair);
+    } else {
+      // Final ordering complete
+      const finalOrdered = updatedCriteria.map(crit => 
+        crit.id === chosenCriterion.id 
+          ? { ...crit, order: currentIndex }
+          : crit
+      ).sort((a, b) => a.order - b.order);
+      
+      setDecision(prev => ({
+        ...prev,
+        criteria: finalOrdered.map((crit, index) => ({
+          ...crit,
+          weight: 100 - (index * (100 / (finalOrdered.length - 1)))
+        }))
+      }));
+      setCurrentStep('scoring');
+    }
+  };
+
+  // Step 5: Scoring
+  const getScore = (optionId: number, criterionId: number) => {
+    const scoreEntry = decision.scores.find(
+      s => s.optionId === optionId && s.criterionId === criterionId
+    );
+    return scoreEntry?.score || 0;
+  };
+
+  const updateScore = (optionId: number, criterionId: number, score: number) => {
+    const existingIndex = decision.scores.findIndex(
+      s => s.optionId === optionId && s.criterionId === criterionId
+    );
+    
+    if (existingIndex >= 0) {
+      const updatedScores = [...decision.scores];
+      updatedScores[existingIndex] = { optionId, criterionId, score };
+      setDecision(prev => ({ ...prev, scores: updatedScores }));
+    } else {
+      setDecision(prev => ({
+        ...prev,
+        scores: [...prev.scores, { optionId, criterionId, score }]
+      }));
+    }
+  };
+
+  const calculateResults = () => {
+    const totalWeight = decision.criteria.reduce((sum, crit) => sum + crit.weight, 0);
+    
+    const results: Result[] = decision.options.map(option => {
+      let totalScore = 0;
+      let weightedScore = 0;
+      
+      decision.criteria.forEach(criterion => {
+        const score = getScore(option.id, criterion.id);
+        totalScore += score;
+        weightedScore += score * criterion.weight;
+      });
+      
+      return {
+        optionId: option.id,
+        optionName: option.name,
+        totalScore: totalScore / decision.criteria.length,
+        weightedScore: weightedScore / totalWeight
+      };
+    });
+    
+    results.sort((a, b) => b.weightedScore - a.weightedScore);
+    
+    setDecision(prev => ({ ...prev, results }));
+    setCurrentStep('results');
+  };
+
+  const resetDecision = () => {
+    setDecision({
+      question: '',
+      options: [],
+      criteria: [],
+      scores: [],
+      results: []
+    });
+    setCurrentStep('decision');
+  };
+
+  const renderStep = () => {
+    switch (currentStep) {
+      case 'decision':
+        return (
+          <div className="step-container">
+            <div className="step-header">
+              <h2>What decision are we making today?</h2>
+              <p className="step-description">
+                Let's start by clearly defining the decision you need to make.
+              </p>
+            </div>
+            <form onSubmit={handleDecisionSubmit} className="decision-form">
+              <textarea
+                value={decision.question}
+                onChange={(e) => setDecision(prev => ({ ...prev, question: e.target.value }))}
+                placeholder="e.g., Which job offer should I accept? Which car should I buy? Which project should we prioritize?"
+                className="decision-textarea"
+                rows={4}
+              />
+              <button type="submit" className="continue-button" disabled={!decision.question.trim()}>
+                Continue →
+              </button>
+            </form>
+          </div>
+        );
+
+      case 'options':
+        return (
+          <div className="step-container">
+            <div className="step-header">
+              <h2>What are your options?</h2>
+              <p className="step-description">
+                List all the choices you're considering for: <strong>"{decision.question}"</strong>
+              </p>
+            </div>
+            
+            <form onSubmit={addOption} className="options-form">
+              <div className="input-group">
+                <input
+                  type="text"
+                  value={newOption}
+                  onChange={(e) => setNewOption(e.target.value)}
+                  placeholder="Enter an option..."
+                  className="text-input"
+                />
+                <button type="submit" className="add-button" disabled={!newOption.trim()}>
+                  Add Option
+                </button>
+              </div>
+            </form>
+
+            <div className="items-list">
+              {decision.options.map(option => (
+                <div key={option.id} className="item-card">
+                  <span className="item-name">{option.name}</span>
+                  <button 
+                    onClick={() => removeOption(option.id)}
+                    className="remove-button"
+                    title="Remove option"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="step-actions">
+              <button 
+                onClick={continueToCriteria} 
+                className="continue-button"
+                disabled={decision.options.length < 2}
+              >
+                Continue to Criteria →
+              </button>
+            </div>
+          </div>
+        );
+
+      case 'criteria':
+        return (
+          <div className="step-container">
+            <div className="step-header">
+              <h2>What criteria matter to you?</h2>
+              <p className="step-description">
+                Think about what factors are important when making this decision.
+              </p>
+            </div>
+            
+            <form onSubmit={addCriterion} className="criteria-form">
+              <div className="input-group">
+                <input
+                  type="text"
+                  value={newCriterion}
+                  onChange={(e) => setNewCriterion(e.target.value)}
+                  placeholder="Enter a criterion (e.g., Salary, Location, Growth potential)..."
+                  className="text-input"
+                />
+                <button type="submit" className="add-button" disabled={!newCriterion.trim()}>
+                  Add Criterion
+                </button>
+              </div>
+            </form>
+
+            <div className="items-list">
+              {decision.criteria.map(criterion => (
+                <div key={criterion.id} className="item-card">
+                  <span className="item-name">{criterion.name}</span>
+                  <button 
+                    onClick={() => removeCriterion(criterion.id)}
+                    className="remove-button"
+                    title="Remove criterion"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="step-actions">
+              <button 
+                onClick={continueToOrdering} 
+                className="continue-button"
+                disabled={decision.criteria.length < 2}
+              >
+                Continue to Prioritization →
+              </button>
+            </div>
+          </div>
+        );
+
+      case 'ordering':
+        return (
+          <div className="step-container">
+            <div className="step-header">
+              <h2>Let's prioritize your criteria</h2>
+              <p className="step-description">
+                We'll determine the relative importance of each criterion through pairwise comparisons.
+              </p>
+            </div>
+
+            {orderingStep === 0 && (
+              <div className="ordering-intro">
+                <p>I'll show you pairs of criteria and ask which one is more important to you.</p>
+                <button onClick={startOrdering} className="start-button">
+                  Start Prioritization
+                </button>
+              </div>
+            )}
+
+            {orderingStep > 0 && currentPair && (
+              <div className="ordering-comparison">
+                <h3>Which is more important to you?</h3>
+                <div className="comparison-cards">
+                  {currentPair.map(criterion => (
+                    <button
+                      key={criterion.id}
+                      onClick={() => handleOrderingChoice(criterion)}
+                      className="comparison-card"
+                    >
+                      <h4>{criterion.name}</h4>
+                    </button>
+                  ))}
+                </div>
+                <div className="progress-indicator">
+                  Step {orderingStep} of {decision.criteria.length - 1}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+
+      case 'scoring':
+        return (
+          <div className="step-container">
+            <div className="step-header">
+              <h2>Rate each option</h2>
+              <p className="step-description">
+                For each option, rate how well it performs on each criterion (1-10 scale).
+              </p>
+            </div>
+
+            <div className="scoring-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Option / Criterion</th>
+                    {decision.criteria.map(criterion => (
+                      <th key={criterion.id} className="criterion-header">
+                        {criterion.name}
+                        <div className="weight-indicator">{criterion.weight.toFixed(0)}%</div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {decision.options.map(option => (
+                    <tr key={option.id}>
+                      <td className="option-name">{option.name}</td>
+                      {decision.criteria.map(criterion => (
+                        <td key={criterion.id} className="score-cell">
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            value={getScore(option.id, criterion.id) || ''}
+                            onChange={(e) => updateScore(option.id, criterion.id, parseInt(e.target.value) || 0)}
+                            placeholder="1-10"
+                            className="score-input"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="step-actions">
+              <button onClick={calculateResults} className="calculate-button">
+                Calculate Results
+              </button>
+            </div>
+          </div>
+        );
+
+      case 'results':
+        return (
+          <div className="step-container">
+            <div className="step-header">
+              <h2>Your Decision Results</h2>
+              <p className="step-description">
+                Based on your criteria and ratings, here's how your options rank:
+              </p>
+            </div>
+
+            <div className="results-container">
+              {decision.results.map((result, index) => (
+                <div key={result.optionId} className={`result-card ${index === 0 ? 'winner' : ''}`}>
+                  <div className="result-rank">#{index + 1}</div>
+                  <div className="result-content">
+                    <h3>{result.optionName}</h3>
+                    <div className="result-scores">
+                      <span className="weighted-score">
+                        Weighted Score: {result.weightedScore.toFixed(2)}
+                      </span>
+                      <span className="average-score">
+                        Average Score: {result.totalScore.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                  {index === 0 && <div className="winner-badge">Recommended</div>}
+                </div>
+              ))}
+            </div>
+
+            <div className="step-actions">
+              <button onClick={resetDecision} className="reset-button">
+                Start New Decision
+              </button>
+            </div>
+          </div>
+        );
+
+      default:
+        return null;
+    }
   };
 
   return (
     <div className="decision-tool-container">
       <header className="tool-header">
-        <h1>Decision Making Tool</h1>
-        <p className="subtitle">Compare options systematically to make better decisions</p>
+        <h1>Decision Making Assistant</h1>
+        <p className="subtitle">Let's make better decisions together</p>
       </header>
 
-      <div className="tool-layout">
-        {/* Left Panel - Options */}
-        <div className="panel options-panel">
-          <h2>Options</h2>
-          <p className="panel-description">Define the choices you're considering</p>
-          
-          <form onSubmit={handleOptionSubmit} className="input-form">
-            <div className="input-group">
-              <input
-                type="text"
-                value={newOptionName}
-                onChange={(e) => setNewOptionName(e.target.value)}
-                placeholder="Enter option name..."
-                className="text-input"
-              />
-              <button type="submit" className="add-button">
-                Add Option
-              </button>
-            </div>
-          </form>
-
-          <div className="items-list">
-            {options.map(option => (
-              <div key={option.id} className="item-card">
-                <span className="item-name">{option.name}</span>
-                <button 
-                  onClick={() => removeOption(option.id)}
-                  className="remove-button"
-                  title="Remove option"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            {options.length === 0 && (
-              <p className="empty-state">No options added yet. Add your first option above.</p>
-            )}
-          </div>
-        </div>
-
-        {/* Right Panel - Attributes */}
-        <div className="panel attributes-panel">
-          <h2>Attributes & Weights</h2>
-          <p className="panel-description">Define criteria and their importance</p>
-          
-          <form onSubmit={handleAttributeSubmit} className="input-form">
-            <div className="input-group">
-              <input
-                type="text"
-                value={newAttributeName}
-                onChange={(e) => setNewAttributeName(e.target.value)}
-                placeholder="Enter attribute name..."
-                className="text-input"
-              />
-            </div>
-            <div className="input-group">
-              <label htmlFor="weight-input">Weight: {newAttributeWeight}%</label>
-              <input
-                id="weight-input"
-                type="range"
-                min="0"
-                max="100"
-                value={newAttributeWeight}
-                onChange={(e) => setNewAttributeWeight(parseInt(e.target.value))}
-                className="weight-slider"
-              />
-              <button type="submit" className="add-button">
-                Add Attribute
-              </button>
-            </div>
-          </form>
-
-          <div className="items-list">
-            {attributes.map(attr => (
-              <div key={attr.id} className="item-card">
-                <div className="item-info">
-                  <span className="item-name">{attr.name}</span>
-                  <span className="weight-badge">{attr.weight}%</span>
-                </div>
-                <button 
-                  onClick={() => removeAttribute(attr.id)}
-                  className="remove-button"
-                  title="Remove attribute"
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            {attributes.length === 0 && (
-              <p className="empty-state">No attributes added yet. Add your first attribute above.</p>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom Section - Scoring Matrix */}
-      {options.length > 0 && attributes.length > 0 && (
-        <div className="scoring-section">
-          <h2>Scoring Matrix</h2>
-          <p className="panel-description">Rate each option on each attribute (1-10 scale)</p>
-          <div className="scoring-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Option / Attribute</th>
-                  {attributes.map(attr => (
-                    <th key={attr.id} className="attribute-header">
-                      {attr.name}
-                      <div className="weight-indicator">{attr.weight}%</div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {options.map(option => (
-                  <tr key={option.id}>
-                    <td className="option-name">{option.name}</td>
-                    {attributes.map(attr => (
-                      <td key={attr.id} className="score-cell">
-                        <input
-                          type="number"
-                          min="1"
-                          max="10"
-                          placeholder="1-10"
-                          className="score-input"
-                        />
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <button className="calculate-button">
-            Calculate Results
-          </button>
-        </div>
-      )}
-
-      {/* Results Section */}
-      <div className="results-section">
-        <h2>Results & Analysis</h2>
-        <p className="panel-description">View your decision analysis and recommendations</p>
-        <div className="results-placeholder">
-          <p>Complete the scoring matrix above to see results</p>
-        </div>
+      <div className="tool-content">
+        {renderStep()}
       </div>
     </div>
   );
