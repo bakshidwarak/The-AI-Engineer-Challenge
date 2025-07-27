@@ -105,6 +105,7 @@ body {
   transition: border-color 0.3s, box-shadow 0.3s;
   background: white;
   line-height: 1.6;
+  color: #111;
 }
 
 .decision-textarea:focus {
@@ -135,6 +136,7 @@ body {
   transition: border-color 0.3s, box-shadow 0.3s;
   background: white;
   min-height: 50px;
+  color: #111;
 }
 
 .text-input:focus {
