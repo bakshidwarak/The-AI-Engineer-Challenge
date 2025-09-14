@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
+import { decisionAPI, getApiKey, setApiKey, removeApiKey } from './api';
 
 // Types for the decision-making process
 interface Decision {
@@ -8,6 +9,7 @@ interface Decision {
   criteria: Criterion[];
   scores: ScoreEntry[];
   results: Result[];
+  implementationPlan?: string;
 }
 
 interface Option {
@@ -35,10 +37,11 @@ interface Result {
   weightedScore: number;
 }
 
-type Step = 'decision' | 'options' | 'criteria' | 'ordering' | 'scoring' | 'results';
+type Step = 'api-key' | 'decision' | 'options' | 'criteria' | 'ordering' | 'scoring' | 'results' | 'plan';
 
 function App() {
-  const [currentStep, setCurrentStep] = useState<Step>('decision');
+  const [currentStep, setCurrentStep] = useState<Step>('api-key');
+  const [apiKeyInput, setApiKeyInput] = useState('');
   const [decision, setDecision] = useState<Decision>({
     question: '',
     options: [],
@@ -47,11 +50,64 @@ function App() {
     results: []
   });
 
-  // Step 1: Decision Question
-  const handleDecisionSubmit = (e: React.FormEvent) => {
+  // Loading states
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
+  const [suggestedCriteria, setSuggestedCriteria] = useState<Array<{name: string, weight: number}>>([]);
+  const [loadingPlan, setLoadingPlan] = useState(false);
+
+  // Check if API key exists on component mount
+  useEffect(() => {
+    const existingApiKey = getApiKey();
+    if (existingApiKey) {
+      setCurrentStep('decision');
+    }
+  }, []);
+
+  // API Key Setup
+  const handleApiKeySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (apiKeyInput.trim()) {
+      setApiKey(apiKeyInput.trim());
+      setCurrentStep('decision');
+      setApiKeyInput('');
+    }
+  };
+
+  const handleLogout = () => {
+    removeApiKey();
+    setCurrentStep('api-key');
+    setDecision({
+      question: '',
+      options: [],
+      criteria: [],
+      scores: [],
+      results: []
+    });
+  };
+
+  // Step 1: Decision Question with LLM integration
+  const handleDecisionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (decision.question.trim()) {
       setCurrentStep('options');
+      
+      // Get LLM suggestions for options
+      const apiKey = getApiKey();
+      if (apiKey) {
+        setLoadingSuggestions(true);
+        try {
+          const response = await decisionAPI.suggestOptions({
+            decision: decision.question,
+            api_key: apiKey
+          });
+          setSuggestedOptions(response.options);
+        } catch (error) {
+          console.error('Failed to get option suggestions:', error);
+        } finally {
+          setLoadingSuggestions(false);
+        }
+      }
     }
   };
 
@@ -70,6 +126,16 @@ function App() {
     }
   };
 
+  const addSuggestedOption = (optionText: string) => {
+    const option = { id: Date.now(), name: optionText };
+    setDecision(prev => ({
+      ...prev,
+      options: [...prev.options, option]
+    }));
+    // Remove from suggestions
+    setSuggestedOptions(prev => prev.filter(opt => opt !== optionText));
+  };
+
   const removeOption = (id: number) => {
     setDecision(prev => ({
       ...prev,
@@ -77,9 +143,27 @@ function App() {
     }));
   };
 
-  const continueToCriteria = () => {
+  const continueToCriteria = async () => {
     if (decision.options.length >= 2) {
       setCurrentStep('criteria');
+      
+      // Get LLM suggestions for criteria
+      const apiKey = getApiKey();
+      if (apiKey) {
+        setLoadingSuggestions(true);
+        try {
+          const response = await decisionAPI.suggestCriteria({
+            decision: decision.question,
+            options: decision.options.map(opt => opt.name),
+            api_key: apiKey
+          });
+          setSuggestedCriteria(response.criteria);
+        } catch (error) {
+          console.error('Failed to get criteria suggestions:', error);
+        } finally {
+          setLoadingSuggestions(false);
+        }
+      }
     }
   };
 
@@ -103,10 +187,34 @@ function App() {
     }
   };
 
+  const addSuggestedCriterion = (criterionData: {name: string, weight: number}) => {
+    const criterion = { 
+      id: Date.now(), 
+      name: criterionData.name, 
+      weight: criterionData.weight,
+      order: decision.criteria.length
+    };
+    setDecision(prev => ({
+      ...prev,
+      criteria: [...prev.criteria, criterion]
+    }));
+    // Remove from suggestions
+    setSuggestedCriteria(prev => prev.filter(crit => crit.name !== criterionData.name));
+  };
+
   const removeCriterion = (id: number) => {
     setDecision(prev => ({
       ...prev,
       criteria: prev.criteria.filter(crit => crit.id !== id)
+    }));
+  };
+
+  const updateCriterionWeight = (id: number, weight: number) => {
+    setDecision(prev => ({
+      ...prev,
+      criteria: prev.criteria.map(crit => 
+        crit.id === id ? { ...crit, weight } : crit
+      )
     }));
   };
 
@@ -219,6 +327,31 @@ function App() {
     setCurrentStep('results');
   };
 
+  // Generate implementation plan
+  const generateImplementationPlan = async () => {
+    const apiKey = getApiKey();
+    if (!apiKey || decision.results.length === 0) return;
+
+    const topResult = decision.results[0];
+    setLoadingPlan(true);
+    
+    try {
+      const response = await decisionAPI.generatePlan({
+        decision: decision.question,
+        selected_option: topResult.optionName,
+        criteria: decision.criteria.map(c => ({ name: c.name, weight: c.weight })),
+        api_key: apiKey
+      });
+      
+      setDecision(prev => ({ ...prev, implementationPlan: response.plan }));
+      setCurrentStep('plan');
+    } catch (error) {
+      console.error('Failed to generate implementation plan:', error);
+    } finally {
+      setLoadingPlan(false);
+    }
+  };
+
   const resetDecision = () => {
     setDecision({
       question: '',
@@ -227,19 +360,52 @@ function App() {
       scores: [],
       results: []
     });
+    setSuggestedOptions([]);
+    setSuggestedCriteria([]);
     setCurrentStep('decision');
   };
 
   const renderStep = () => {
     switch (currentStep) {
+      case 'api-key':
+        return (
+          <div className="step-container">
+            <div className="step-header">
+              <h2>Welcome to AI-Powered Decision Making</h2>
+              <p className="step-description">
+                To get started, please enter your OpenAI API key. This will enable AI suggestions for options, criteria, and implementation plans.
+              </p>
+            </div>
+            <form onSubmit={handleApiKeySubmit} className="decision-form">
+              <input
+                type="password"
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                placeholder="Enter your OpenAI API key..."
+                className="text-input"
+                style={{ width: '100%', marginBottom: '1rem' }}
+              />
+              <button type="submit" className="continue-button" disabled={!apiKeyInput.trim()}>
+                Get Started →
+              </button>
+            </form>
+            <div className="api-key-help">
+              <p><small>Your API key is stored locally and never sent to our servers except to make requests to OpenAI on your behalf.</small></p>
+            </div>
+          </div>
+        );
+
       case 'decision':
         return (
           <div className="step-container">
             <div className="step-header">
               <h2>What decision are we making today?</h2>
               <p className="step-description">
-                Let's start by clearly defining the decision you need to make.
+                Let's start by clearly defining the decision you need to make. The AI will suggest relevant options for you.
               </p>
+              <button onClick={handleLogout} className="logout-button">
+                Change API Key
+              </button>
             </div>
             <form onSubmit={handleDecisionSubmit} className="decision-form">
               <textarea
@@ -262,9 +428,32 @@ function App() {
             <div className="step-header">
               <h2>What are your options?</h2>
               <p className="step-description">
-                List all the choices you're considering for: <strong>"{decision.question}"</strong>
+                For: <strong>"{decision.question}"</strong>
               </p>
             </div>
+            
+            {loadingSuggestions && (
+              <div className="loading-suggestions">
+                <p>🤖 AI is suggesting options for you...</p>
+              </div>
+            )}
+
+            {suggestedOptions.length > 0 && (
+              <div className="suggestions-section">
+                <h3>AI Suggestions:</h3>
+                <div className="suggestions-list">
+                  {suggestedOptions.map((option, index) => (
+                    <button
+                      key={index}
+                      onClick={() => addSuggestedOption(option)}
+                      className="suggestion-button"
+                    >
+                      + {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             
             <form onSubmit={addOption} className="options-form">
               <div className="input-group">
@@ -272,7 +461,7 @@ function App() {
                   type="text"
                   value={newOption}
                   onChange={(e) => setNewOption(e.target.value)}
-                  placeholder="Enter an option..."
+                  placeholder="Add your own option..."
                   className="text-input"
                 />
                 <button type="submit" className="add-button" disabled={!newOption.trim()}>
@@ -314,9 +503,32 @@ function App() {
             <div className="step-header">
               <h2>What criteria matter to you?</h2>
               <p className="step-description">
-                Think about what factors are important when making this decision.
+                The AI has suggested criteria and weights based on your decision and options. You can adjust the weights as needed.
               </p>
             </div>
+
+            {loadingSuggestions && (
+              <div className="loading-suggestions">
+                <p>🤖 AI is suggesting criteria and weights...</p>
+              </div>
+            )}
+
+            {suggestedCriteria.length > 0 && (
+              <div className="suggestions-section">
+                <h3>AI Suggestions:</h3>
+                <div className="criteria-suggestions">
+                  {suggestedCriteria.map((criterion, index) => (
+                    <button
+                      key={index}
+                      onClick={() => addSuggestedCriterion(criterion)}
+                      className="suggestion-button"
+                    >
+                      + {criterion.name} ({criterion.weight}%)
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             
             <form onSubmit={addCriterion} className="criteria-form">
               <div className="input-group">
@@ -324,7 +536,7 @@ function App() {
                   type="text"
                   value={newCriterion}
                   onChange={(e) => setNewCriterion(e.target.value)}
-                  placeholder="Enter a criterion (e.g., Salary, Location, Growth potential)..."
+                  placeholder="Add your own criterion..."
                   className="text-input"
                 />
                 <button type="submit" className="add-button" disabled={!newCriterion.trim()}>
@@ -333,10 +545,22 @@ function App() {
               </div>
             </form>
 
-            <div className="items-list">
+            <div className="criteria-list">
               {decision.criteria.map(criterion => (
-                <div key={criterion.id} className="item-card">
-                  <span className="item-name">{criterion.name}</span>
+                <div key={criterion.id} className="criterion-card">
+                  <span className="criterion-name">{criterion.name}</span>
+                  <div className="weight-controls">
+                    <label>Weight: </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={criterion.weight}
+                      onChange={(e) => updateCriterionWeight(criterion.id, parseInt(e.target.value) || 0)}
+                      className="weight-input"
+                    />
+                    <span>%</span>
+                  </div>
                   <button 
                     onClick={() => removeCriterion(criterion.id)}
                     className="remove-button"
@@ -486,6 +710,40 @@ function App() {
             </div>
 
             <div className="step-actions">
+              <button 
+                onClick={generateImplementationPlan} 
+                className="plan-button"
+                disabled={loadingPlan}
+              >
+                {loadingPlan ? '🤖 Generating Plan...' : 'Generate Implementation Plan →'}
+              </button>
+              <button onClick={resetDecision} className="reset-button">
+                Start New Decision
+              </button>
+            </div>
+          </div>
+        );
+
+      case 'plan':
+        return (
+          <div className="step-container">
+            <div className="step-header">
+              <h2>Implementation Plan</h2>
+              <p className="step-description">
+                Here's your AI-generated plan for implementing: <strong>{decision.results[0]?.optionName}</strong>
+              </p>
+            </div>
+
+            <div className="plan-content">
+              <div 
+                className="plan-text"
+                dangerouslySetInnerHTML={{ 
+                  __html: decision.implementationPlan?.replace(/\n/g, '<br>') || '' 
+                }}
+              />
+            </div>
+
+            <div className="step-actions">
               <button onClick={resetDecision} className="reset-button">
                 Start New Decision
               </button>
@@ -501,8 +759,8 @@ function App() {
   return (
     <div className="decision-tool-container">
       <header className="tool-header">
-        <h1>Decision Making Assistant</h1>
-        <p className="subtitle">Let's make better decisions together</p>
+        <h1>AI-Powered Decision Making Assistant</h1>
+        <p className="subtitle">Make better decisions with AI guidance</p>
       </header>
 
       <div className="tool-content">

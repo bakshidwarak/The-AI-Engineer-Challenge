@@ -7,10 +7,11 @@ from pydantic import BaseModel
 # Import OpenAI client for interacting with OpenAI's API
 from openai import OpenAI
 import os
-from typing import Optional
+import json
+from typing import Optional, List
 
 # Initialize FastAPI application with a title
-app = FastAPI(title="OpenAI Chat API")
+app = FastAPI(title="Decision Making API")
 
 # Configure CORS (Cross-Origin Resource Sharing) middleware
 # This allows the API to be accessed from different domains/origins
@@ -22,13 +23,43 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers in requests
 )
 
-# Define the data model for chat requests using Pydantic
-# This ensures incoming request data is properly validated
+# Define data models for decision-making endpoints
 class ChatRequest(BaseModel):
-    developer_message: str  # Message from the developer/system
-    user_message: str      # Message from the user
-    model: Optional[str] = "gpt-4.1-mini"  # Optional model selection with default
-    api_key: str          # OpenAI API key for authentication
+    developer_message: str
+    user_message: str
+    model: Optional[str] = "gpt-4o-mini"
+    api_key: str
+
+class SuggestOptionsRequest(BaseModel):
+    decision: str
+    api_key: str
+    model: Optional[str] = "gpt-4o-mini"
+
+class SuggestCriteriaRequest(BaseModel):
+    decision: str
+    options: List[str]
+    api_key: str
+    model: Optional[str] = "gpt-4o-mini"
+
+class GeneratePlanRequest(BaseModel):
+    decision: str
+    selected_option: str
+    criteria: List[dict]  # {name: str, weight: float}
+    api_key: str
+    model: Optional[str] = "gpt-4o-mini"
+
+# Helper function to get LLM response
+async def get_llm_response(client: OpenAI, messages: List[dict], model: str = "gpt-4o-mini"):
+    """Get a non-streaming response from the LLM"""
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM API error: {str(e)}")
 
 # Define the main chat endpoint that handles POST requests
 @app.post("/api/chat")
@@ -59,6 +90,177 @@ async def chat(request: ChatRequest):
     
     except Exception as e:
         # Handle any errors that occur during processing
+        raise HTTPException(status_code=500, detail=str(e))
+
+# New endpoint: Suggest options for a decision
+@app.post("/api/suggest-options")
+async def suggest_options(request: SuggestOptionsRequest):
+    try:
+        client = OpenAI(api_key=request.api_key)
+        
+        prompt = f"""
+        You are a decision-making assistant. A user needs to make the following decision:
+        
+        "{request.decision}"
+        
+        Please suggest 4-6 realistic and diverse options they could consider. 
+        Provide your response as a JSON array of strings, where each string is a potential option.
+        
+        Example format:
+        ["Option 1", "Option 2", "Option 3", "Option 4"]
+        
+        Make sure the options are:
+        1. Realistic and actionable
+        2. Diverse in approach
+        3. Relevant to the decision context
+        4. Clearly stated
+        """
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful decision-making assistant. Always respond with valid JSON."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response_content = await get_llm_response(client, messages, request.model)
+        
+        # Try to parse the JSON response
+        try:
+            options = json.loads(response_content)
+            if not isinstance(options, list):
+                raise ValueError("Response is not a list")
+            return {"options": options}
+        except (json.JSONDecodeError, ValueError):
+            # Fallback: extract options from text
+            lines = response_content.strip().split('\n')
+            options = []
+            for line in lines:
+                line = line.strip()
+                if line and (line.startswith('"') or line.startswith('•') or line.startswith('-') or line.startswith('*')):
+                    # Clean up the line
+                    clean_option = line.strip('•-*"').strip()
+                    if clean_option:
+                        options.append(clean_option)
+            
+            return {"options": options[:6]}  # Limit to 6 options
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# New endpoint: Suggest criteria and weights
+@app.post("/api/suggest-criteria")
+async def suggest_criteria(request: SuggestCriteriaRequest):
+    try:
+        client = OpenAI(api_key=request.api_key)
+        
+        options_text = "\n".join([f"- {option}" for option in request.options])
+        
+        prompt = f"""
+        You are a decision-making assistant. A user needs to make this decision:
+        
+        "{request.decision}"
+        
+        They are considering these options:
+        {options_text}
+        
+        Please suggest 4-6 important criteria they should consider when evaluating these options, along with suggested weights (importance percentages that sum to 100%).
+        
+        Provide your response as a JSON array of objects, where each object has "name" and "weight" properties.
+        
+        Example format:
+        [
+            {{"name": "Cost", "weight": 25}},
+            {{"name": "Time Required", "weight": 20}},
+            {{"name": "Long-term Benefits", "weight": 30}},
+            {{"name": "Risk Level", "weight": 25}}
+        ]
+        
+        Make sure:
+        1. Criteria are relevant to the decision and options
+        2. Weights are realistic and sum to 100
+        3. Include both quantitative and qualitative factors
+        4. Consider short-term and long-term impacts
+        """
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful decision-making assistant. Always respond with valid JSON."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response_content = await get_llm_response(client, messages, request.model)
+        
+        # Try to parse the JSON response
+        try:
+            criteria = json.loads(response_content)
+            if not isinstance(criteria, list):
+                raise ValueError("Response is not a list")
+            
+            # Validate weights sum to approximately 100
+            total_weight = sum(c.get('weight', 0) for c in criteria)
+            if abs(total_weight - 100) > 5:  # Allow small variance
+                # Normalize weights to sum to 100
+                for criterion in criteria:
+                    criterion['weight'] = round((criterion.get('weight', 0) / total_weight) * 100, 1)
+            
+            return {"criteria": criteria}
+        except (json.JSONDecodeError, ValueError):
+            # Fallback: create default criteria
+            default_criteria = [
+                {"name": "Cost", "weight": 25},
+                {"name": "Feasibility", "weight": 25},
+                {"name": "Long-term Impact", "weight": 25},
+                {"name": "Personal Preference", "weight": 25}
+            ]
+            return {"criteria": default_criteria}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# New endpoint: Generate implementation plan
+@app.post("/api/generate-plan")
+async def generate_plan(request: GeneratePlanRequest):
+    try:
+        client = OpenAI(api_key=request.api_key)
+        
+        criteria_text = "\n".join([f"- {c['name']}: {c['weight']}%" for c in request.criteria])
+        
+        prompt = f"""
+        You are a decision-making assistant. A user has made the following decision:
+        
+        Decision: "{request.decision}"
+        Selected Option: "{request.selected_option}"
+        
+        This choice was evaluated based on these criteria:
+        {criteria_text}
+        
+        Please create a detailed implementation plan for executing this decision. Include:
+        
+        1. **Immediate Next Steps** (What to do in the next 1-7 days)
+        2. **Short-term Actions** (What to do in the next 1-4 weeks)
+        3. **Medium-term Milestones** (What to achieve in 1-3 months)
+        4. **Long-term Goals** (What to accomplish in 3-12 months)
+        5. **Potential Challenges** and how to address them
+        6. **Success Metrics** to track progress
+        7. **Resources Needed** (time, money, people, tools, etc.)
+        
+        Make the plan:
+        - Specific and actionable
+        - Realistic and achievable
+        - Well-structured with clear timelines
+        - Comprehensive but not overwhelming
+        
+        Use markdown formatting for better readability.
+        """
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful decision-making and planning assistant. Provide detailed, actionable plans."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        response_content = await get_llm_response(client, messages, request.model)
+        
+        return {"plan": response_content}
+    
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # Define a health check endpoint to verify API status
