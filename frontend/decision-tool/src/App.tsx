@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
 import { decisionAPI, getApiKey, setApiKey, removeApiKey } from './api';
+import ReactMarkdown from 'react-markdown';
 
 // Types for the decision-making process
 interface Decision {
@@ -210,12 +211,23 @@ function App() {
   };
 
   const updateCriterionWeight = (id: number, weight: number) => {
-    setDecision(prev => ({
-      ...prev,
-      criteria: prev.criteria.map(crit => 
+    setDecision(prev => {
+      const updatedCriteria = prev.criteria.map(crit => 
         crit.id === id ? { ...crit, weight } : crit
-      )
-    }));
+      );
+      
+      // Normalize weights to sum to 100
+      const totalWeight = updatedCriteria.reduce((sum, crit) => sum + crit.weight, 0);
+      if (totalWeight > 0) {
+        const normalizedCriteria = updatedCriteria.map(crit => ({
+          ...crit,
+          weight: Math.round((crit.weight / totalWeight) * 100 * 10) / 10 // Round to 1 decimal place
+        }));
+        return { ...prev, criteria: normalizedCriteria };
+      }
+      
+      return { ...prev, criteria: updatedCriteria };
+    });
   };
 
   const continueToOrdering = () => {
@@ -572,6 +584,22 @@ function App() {
               ))}
             </div>
 
+            {decision.criteria.length > 0 && (
+              <div className="weight-validation">
+                <div className="weight-total">
+                  <span>Total Weight: </span>
+                  <span className={`weight-sum ${Math.abs(decision.criteria.reduce((sum, crit) => sum + crit.weight, 0) - 100) < 0.1 ? 'valid' : 'invalid'}`}>
+                    {decision.criteria.reduce((sum, crit) => sum + crit.weight, 0).toFixed(1)}%
+                  </span>
+                </div>
+                {Math.abs(decision.criteria.reduce((sum, crit) => sum + crit.weight, 0) - 100) >= 0.1 && (
+                  <div className="weight-warning">
+                    ⚠️ Weights should sum to 100% for accurate results
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="step-actions">
               <button 
                 onClick={continueToOrdering} 
@@ -654,15 +682,17 @@ function App() {
                       <td className="option-name">{option.name}</td>
                       {decision.criteria.map(criterion => (
                         <td key={criterion.id} className="score-cell">
-                          <input
-                            type="number"
-                            min="1"
-                            max="10"
-                            value={getScore(option.id, criterion.id) || ''}
-                            onChange={(e) => updateScore(option.id, criterion.id, parseInt(e.target.value) || 0)}
-                            placeholder="1-10"
-                            className="score-input"
-                          />
+                          <div className="score-slider-container">
+                            <input
+                              type="range"
+                              min="1"
+                              max="10"
+                              value={getScore(option.id, criterion.id) || 1}
+                              onChange={(e) => updateScore(option.id, criterion.id, parseInt(e.target.value))}
+                              className="score-slider"
+                            />
+                            <span className="score-value">{getScore(option.id, criterion.id) || 1}</span>
+                          </div>
                         </td>
                       ))}
                     </tr>
@@ -735,12 +765,11 @@ function App() {
             </div>
 
             <div className="plan-content">
-              <div 
-                className="plan-text"
-                dangerouslySetInnerHTML={{ 
-                  __html: decision.implementationPlan?.replace(/\n/g, '<br>') || '' 
-                }}
-              />
+              <div className="plan-text">
+                <ReactMarkdown>
+                  {decision.implementationPlan || ''}
+                </ReactMarkdown>
+              </div>
             </div>
 
             <div className="step-actions">
