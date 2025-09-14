@@ -42,6 +42,20 @@ export interface GeneratePlanResponse {
   plan: string;
 }
 
+export interface ConversationalOptionsRequest {
+  decision: string;
+  conversation_history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  current_options: string[];
+  user_message: string;
+  api_key: string;
+  model?: string;
+}
+
+export interface ConversationalOptionsResponse {
+  response: string;
+  suggested_options: string[];
+}
+
 // API functions
 export const decisionAPI = {
   /**
@@ -80,6 +94,19 @@ export const decisionAPI = {
     } catch (error) {
       console.error('Error generating plan:', error);
       throw new Error('Failed to generate implementation plan from LLM');
+    }
+  },
+
+  /**
+   * Get conversational help with generating and refining options
+   */
+  async conversationalOptions(request: ConversationalOptionsRequest): Promise<ConversationalOptionsResponse> {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/conversational-options`, request);
+      return response.data;
+    } catch (error) {
+      console.error('Error with conversational options:', error);
+      throw new Error('Failed to get conversational help with options');
     }
   },
 

@@ -57,6 +57,12 @@ function App() {
   const [suggestedCriteria, setSuggestedCriteria] = useState<Array<{name: string, weight: number}>>([]);
   const [loadingPlan, setLoadingPlan] = useState(false);
 
+  // Conversational options state
+  const [showConversationalOptions, setShowConversationalOptions] = useState(false);
+  const [conversationHistory, setConversationHistory] = useState<Array<{role: 'user' | 'assistant', content: string}>>([]);
+  const [chatMessage, setChatMessage] = useState('');
+  const [loadingChat, setLoadingChat] = useState(false);
+
   // Check if API key exists on component mount
   useEffect(() => {
     const existingApiKey = getApiKey();
@@ -414,7 +420,85 @@ function App() {
     });
     setSuggestedOptions([]);
     setSuggestedCriteria([]);
+    setConversationHistory([]);
+    setShowConversationalOptions(false);
     setCurrentStep('decision');
+  };
+
+  // Conversational options functionality
+  const toggleConversationalOptions = () => {
+    setShowConversationalOptions(!showConversationalOptions);
+    if (!showConversationalOptions) {
+      // Initialize conversation with a welcome message
+      const welcomeMessage = "Hi! I'm here to help you brainstorm and refine your options. What would you like to explore about your decision?";
+      setConversationHistory([{ role: 'assistant', content: welcomeMessage }]);
+    }
+  };
+
+  const sendChatMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatMessage.trim() || loadingChat) return;
+
+    const userMessage = chatMessage.trim();
+    setChatMessage('');
+    setLoadingChat(true);
+
+    // Add user message to conversation
+    const updatedHistory = [...conversationHistory, { role: 'user' as const, content: userMessage }];
+    setConversationHistory(updatedHistory);
+
+    try {
+      const apiKey = getApiKey();
+      if (apiKey) {
+        const response = await decisionAPI.conversationalOptions({
+          decision: decision.question,
+          conversation_history: updatedHistory,
+          current_options: decision.options.map(opt => opt.name),
+          user_message: userMessage,
+          api_key: apiKey
+        });
+
+        // Add assistant response to conversation
+        setConversationHistory([...updatedHistory, { role: 'assistant', content: response.response }]);
+      }
+    } catch (error) {
+      console.error('Failed to get conversational response:', error);
+      setConversationHistory([...updatedHistory, { 
+        role: 'assistant', 
+        content: "I'm sorry, I encountered an error. Please try again." 
+      }]);
+    } finally {
+      setLoadingChat(false);
+    }
+  };
+
+  const extractOptionsFromMessage = (message: string): string[] => {
+    // Simple extraction of options mentioned in the message
+    // Look for patterns like "Option 1:", "1.", "-", "•", etc.
+    const lines = message.split('\n');
+    const options: string[] = [];
+    
+    lines.forEach(line => {
+      const trimmed = line.trim();
+      // Look for numbered lists, bullet points, or explicit option mentions
+      if (trimmed.match(/^\d+[\.\)]\s+/) || 
+          trimmed.match(/^[-•*]\s+/) || 
+          trimmed.toLowerCase().includes('option') ||
+          trimmed.length > 10 && trimmed.length < 100) {
+        // Clean up the option text
+        const cleanOption = trimmed
+          .replace(/^\d+[\.\)]\s+/, '')
+          .replace(/^[-•*]\s+/, '')
+          .replace(/^option\s*\d*:?\s*/i, '')
+          .trim();
+        
+        if (cleanOption && !options.includes(cleanOption)) {
+          options.push(cleanOption);
+        }
+      }
+    });
+    
+    return options;
   };
 
   const renderStep = () => {
@@ -482,6 +566,12 @@ function App() {
               <p className="step-description">
                 For: <strong>"{decision.question}"</strong>
               </p>
+              <button 
+                onClick={toggleConversationalOptions}
+                className={`conversational-toggle ${showConversationalOptions ? 'active' : ''}`}
+              >
+                {showConversationalOptions ? '💬 Close Chat' : '💬 Chat with AI about Options'}
+              </button>
             </div>
             
             {loadingSuggestions && (
@@ -503,6 +593,65 @@ function App() {
                       + {option}
                     </button>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {showConversationalOptions && (
+              <div className="conversational-options">
+                <div className="chat-container">
+                  <div className="chat-messages">
+                    {conversationHistory.map((message, index) => (
+                      <div key={index} className={`chat-message ${message.role}`}>
+                        <div className="message-content">
+                          {message.content}
+                        </div>
+                        {message.role === 'assistant' && (
+                          <div className="message-actions">
+                            {extractOptionsFromMessage(message.content).map((option, optIndex) => (
+                              <button
+                                key={optIndex}
+                                onClick={() => addSuggestedOption(option)}
+                                className="add-option-from-chat"
+                              >
+                                + Add "{option}"
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {loadingChat && (
+                      <div className="chat-message assistant">
+                        <div className="message-content">
+                          <div className="typing-indicator">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <form onSubmit={sendChatMessage} className="chat-input-form">
+                    <div className="chat-input-group">
+                      <input
+                        type="text"
+                        value={chatMessage}
+                        onChange={(e) => setChatMessage(e.target.value)}
+                        placeholder="Ask about options, get suggestions, or explore alternatives..."
+                        className="chat-input"
+                        disabled={loadingChat}
+                      />
+                      <button 
+                        type="submit" 
+                        className="chat-send-button"
+                        disabled={!chatMessage.trim() || loadingChat}
+                      >
+                        Send
+                      </button>
+                    </div>
+                  </form>
                 </div>
               </div>
             )}

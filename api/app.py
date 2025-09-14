@@ -48,6 +48,14 @@ class GeneratePlanRequest(BaseModel):
     api_key: str
     model: Optional[str] = "gpt-4o-mini"
 
+class ConversationalOptionsRequest(BaseModel):
+    decision: str
+    conversation_history: List[dict]  # [{"role": "user"|"assistant", "content": str}]
+    current_options: List[str]  # Current options the user has
+    user_message: str
+    api_key: str
+    model: Optional[str] = "gpt-4o-mini"
+
 # Helper function to get LLM response
 async def get_llm_response(client: OpenAI, messages: List[dict], model: str = "gpt-4o-mini"):
     """Get a non-streaming response from the LLM"""
@@ -211,6 +219,72 @@ async def suggest_criteria(request: SuggestCriteriaRequest):
                 {"name": "Personal Preference", "weight": 25}
             ]
             return {"criteria": default_criteria}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# New endpoint: Conversational options generation
+@app.post("/api/conversational-options")
+async def conversational_options(request: ConversationalOptionsRequest):
+    try:
+        client = OpenAI(api_key=request.api_key)
+        
+        # Build conversation context
+        conversation_context = ""
+        if request.conversation_history:
+            for msg in request.conversation_history[-6:]:  # Keep last 6 messages for context
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == "user":
+                    conversation_context += f"User: {content}\n"
+                elif role == "assistant":
+                    conversation_context += f"Assistant: {content}\n"
+        
+        current_options_text = "\n".join([f"- {option}" for option in request.current_options]) if request.current_options else "None yet"
+        
+        system_prompt = """You are a helpful decision-making assistant specializing in generating and refining options. 
+
+Your role is to:
+1. Help users brainstorm creative and realistic options for their decisions
+2. Suggest refinements or variations of existing options
+3. Ask clarifying questions to better understand their needs
+4. Provide context and insights about different approaches
+5. Help them think outside the box while staying practical
+
+Guidelines:
+- Be conversational and engaging
+- Ask follow-up questions when helpful
+- Suggest specific, actionable options
+- Consider both conventional and unconventional approaches
+- Help users explore different angles and perspectives
+- Keep responses concise but informative
+- When suggesting options, explain briefly why they might be worth considering
+
+You should respond naturally to the user's questions and requests about their decision options."""
+
+        user_prompt = f"""Decision Context: "{request.decision}"
+
+Current options the user has:
+{current_options_text}
+
+Recent conversation:
+{conversation_context}
+
+User's current message: "{request.user_message}"
+
+Please respond conversationally to help them with their options. If they're asking for new suggestions, provide 2-4 specific options with brief explanations. If they're asking questions or want refinements, address those directly."""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        response_content = await get_llm_response(client, messages, request.model)
+        
+        return {
+            "response": response_content,
+            "suggested_options": []  # We'll extract these in the frontend if needed
+        }
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
