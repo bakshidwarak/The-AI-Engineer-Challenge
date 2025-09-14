@@ -216,17 +216,47 @@ function App() {
         crit.id === id ? { ...crit, weight } : crit
       );
       
-      // Normalize weights to sum to 100
-      const totalWeight = updatedCriteria.reduce((sum, crit) => sum + crit.weight, 0);
-      if (totalWeight > 0) {
+      // Ensure minimum weight of 1% for each criterion to prevent zero weights
+      const minWeight = 1;
+      const criteriaCount = updatedCriteria.length;
+      
+      // If this would be the only criterion with weight, give it 100%
+      if (updatedCriteria.every(crit => crit.id === id || crit.weight === 0)) {
         const normalizedCriteria = updatedCriteria.map(crit => ({
           ...crit,
-          weight: Math.round((crit.weight / totalWeight) * 100 * 10) / 10 // Round to 1 decimal place
+          weight: crit.id === id ? 100 : 0
         }));
         return { ...prev, criteria: normalizedCriteria };
       }
       
-      return { ...prev, criteria: updatedCriteria };
+      // Calculate remaining weight available for other criteria
+      const remainingWeight = 100 - weight;
+      
+      // If the remaining weight is not enough for other criteria (minimum 1% each),
+      // adjust the current weight down
+      const minRequiredForOthers = (criteriaCount - 1) * minWeight;
+      const adjustedWeight = remainingWeight >= minRequiredForOthers ? weight : 100 - minRequiredForOthers;
+      
+      // Distribute remaining weight among other criteria
+      const otherCriteriaCount = criteriaCount - 1;
+      const baseWeightPerOther = otherCriteriaCount > 0 ? Math.floor((100 - adjustedWeight) / otherCriteriaCount) : 0;
+      const extraWeight = otherCriteriaCount > 0 ? (100 - adjustedWeight) % otherCriteriaCount : 0;
+      
+      const normalizedCriteria = updatedCriteria.map((crit) => {
+        if (crit.id === id) {
+          return { ...crit, weight: Math.max(adjustedWeight, minWeight) };
+        } else {
+          // Distribute remaining weight among other criteria
+          const otherIndex = updatedCriteria.findIndex(c => c.id === crit.id);
+          const extra = otherIndex < extraWeight ? 1 : 0;
+          return { 
+            ...crit, 
+            weight: Math.max(baseWeightPerOther + extra, minWeight) 
+          };
+        }
+      });
+      
+      return { ...prev, criteria: normalizedCriteria };
     });
   };
 
@@ -276,12 +306,22 @@ function App() {
           : crit
       ).sort((a, b) => a.order - b.order);
       
+      // Assign weights ensuring no criterion gets zero weight
+      const criteriaCount = finalOrdered.length;
+      const minWeight = 1;
+      const maxWeight = 100 - (criteriaCount - 1) * minWeight;
+      
       setDecision(prev => ({
         ...prev,
-        criteria: finalOrdered.map((crit, index) => ({
-          ...crit,
-          weight: 100 - (index * (100 / (finalOrdered.length - 1)))
-        }))
+        criteria: finalOrdered.map((crit, index) => {
+          // Calculate weight based on priority (higher priority = higher weight)
+          // Ensure minimum weight of 1% for each criterion
+          const priorityWeight = maxWeight - (index * (maxWeight - minWeight) / (criteriaCount - 1));
+          return {
+            ...crit,
+            weight: Math.max(Math.round(priorityWeight), minWeight)
+          };
+        })
       }));
       setCurrentStep('scoring');
     }
@@ -595,6 +635,11 @@ function App() {
                 {Math.abs(decision.criteria.reduce((sum, crit) => sum + crit.weight, 0) - 100) >= 0.1 && (
                   <div className="weight-warning">
                     ⚠️ Weights should sum to 100% for accurate results
+                  </div>
+                )}
+                {decision.criteria.some(crit => crit.weight < 1) && (
+                  <div className="weight-warning">
+                    ⚠️ All criteria must have at least 1% weight to be considered
                   </div>
                 )}
               </div>
